@@ -19,7 +19,9 @@ package controllers
 import (
 	"context"
 	"math/rand"
+	"net/http"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -35,6 +37,29 @@ import (
 	metricsinfradoodlecomv1beta1 "github.com/DoodleScheduling/swagger-hub-controller/api/v1beta1"
 	//+kubebuilder:scaffold:imports
 )
+
+// switchableHTTPClient delegates to a http client which can be exchanged by
+// each test, this is required to trust the certificate of a test tls server.
+type switchableHTTPClient struct {
+	mu     sync.Mutex
+	client *http.Client
+}
+
+func (c *switchableHTTPClient) Do(req *http.Request) (*http.Response, error) {
+	c.mu.Lock()
+	delegate := c.client
+	c.mu.Unlock()
+
+	return delegate.Do(req)
+}
+
+func (c *switchableHTTPClient) set(client *http.Client) {
+	c.mu.Lock()
+	c.client = client
+	c.mu.Unlock()
+}
+
+var testHTTPClient = &switchableHTTPClient{client: http.DefaultClient}
 
 // These tests use Ginkgo (BDD-style Go testing framework). Refer to
 // http://onsi.github.io/ginkgo/ to learn more about Ginkgo.
@@ -88,10 +113,11 @@ var _ = BeforeSuite(func() {
 	//+kubebuilder:scaffold:scheme
 	// SwaggerSpecification setup
 	err = (&SwaggerSpecificationReconciler{
-		Client:   k8sManager.GetClient(),
-		Log:      ctrl.Log.WithName("controllers").WithName("SwaggerSpecification"),
-		Scheme:   k8sManager.GetScheme(),
-		Recorder: k8sManager.GetEventRecorderFor("SwaggerSpecification"),
+		Client:     k8sManager.GetClient(),
+		Log:        ctrl.Log.WithName("controllers").WithName("SwaggerSpecification"),
+		Scheme:     k8sManager.GetScheme(),
+		Recorder:   k8sManager.GetEventRecorderFor("SwaggerSpecification"),
+		HTTPClient: testHTTPClient,
 	}).SetupWithManager(k8sManager, SwaggerSpecificationReconcilerOptions{MaxConcurrentReconciles: 10})
 	Expect(err).ToNot(HaveOccurred(), "failed to setup SwaggerSpecification")
 

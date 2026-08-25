@@ -38,6 +38,50 @@ spec:
           spec:
             description: SwaggerDefinitionSpec defines the desired state of SwaggerDefinition.
             properties:
+              auth:
+                description: |-
+                  Auth configures how the controller authenticates while fetching the
+                  definition from url. It is only evaluated by SwaggerSpecification which
+                  fetches definitions server side.
+                properties:
+                  basic:
+                    description: Basic configures http basic authentication.
+                    properties:
+                      allowInsecure:
+                        description: AllowInsecure permits sending the credentials
+                          to a plain http:// url.
+                        type: boolean
+                      secretRef:
+                        description: |-
+                          SecretRef references a secret in the same namespace as the SwaggerDefinition
+                          which holds the credentials.
+                        properties:
+                          name:
+                            description: Name of the secret.
+                            type: string
+                          passwordField:
+                            default: password
+                            description: PasswordField is the secret key which holds
+                              the password.
+                            type: string
+                          usernameField:
+                            default: username
+                            description: |-
+                              UsernameField is the secret key which holds the username. It is ignored if
+                              a static username is configured.
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      username:
+                        description: |-
+                          Username is a static username. If set it takes precedence over the username
+                          looked up from secretRef.usernameField.
+                        type: string
+                    required:
+                    - secretRef
+                    type: object
+                type: object
               url:
                 type: string
             type: object

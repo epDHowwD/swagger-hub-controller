@@ -3,6 +3,8 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"time"
 
 	"github.com/DoodleScheduling/swagger-hub-controller/api/v1beta1"
@@ -157,6 +159,374 @@ var _ = Describe("SwaggerSpecification controller", func() {
 		It("cleans up", func() {
 			ctx := context.Background()
 			Expect(k8sClient.Delete(ctx, specification)).Should(Succeed())
+		})
+	})
+
+	When("a definition requires basic auth", func() {
+		var (
+			specification *v1beta1.SwaggerSpecification
+			definition    *v1beta1.SwaggerDefinition
+			secret        *corev1.Secret
+			server        *httptest.Server
+			scope         = randStringRunes(5)
+			name          = fmt.Sprintf("basicauth-%s", randStringRunes(5))
+		)
+
+		It("fetches the definition using the credentials from the referenced secret", func() {
+			ctx := context.Background()
+
+			By("serving a definition behind basic auth over https")
+			server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				username, password, ok := r.BasicAuth()
+				if !ok || username != "user" || password != "pass" {
+					w.WriteHeader(http.StatusUnauthorized)
+					return
+				}
+
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"openapi":"3.0.1","info":{"title":"secured","version":"1"},"paths":{"/secured":{"get":{"responses":{"200":{"description":"ok"}}}}}}`))
+			}))
+
+			testHTTPClient.set(server.Client())
+
+			By("creating the credentials secret")
+			secret = &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      name,
+					Namespace: "default",
+				},
+				Data: map[string][]byte{
+					"username": []byte("user"),
+					"password": []byte("pass"),
+				},
+			}
+			Expect(k8sClient.Create(ctx, secret)).Should(Succeed())
+
+			By("creating a SwaggerDefinition referencing the secret")
+			definition = &v1beta1.SwaggerDefinition{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      name,
+					Namespace: "default",
+					Labels:    map[string]string{"scope": scope},
+				},
+				Spec: v1beta1.SwaggerDefinitionSpec{
+					URL: &server.URL,
+					Auth: &v1beta1.DefinitionAuth{
+						Basic: &v1beta1.BasicAuth{
+							SecretRef: v1beta1.LocalSecretReference{
+								Name: name,
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, definition)).Should(Succeed())
+
+			specification = &v1beta1.SwaggerSpecification{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      name,
+					Namespace: "default",
+				},
+				Spec: v1beta1.SwaggerSpecificationSpec{
+					Info: v1beta1.Info{
+						Title: "secured",
+					},
+					DefinitionSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"scope": scope},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, specification)).Should(Succeed())
+
+			By("waiting for the merged specification")
+			key := types.NamespacedName{Name: fmt.Sprintf("swagger-specification-%s", name), Namespace: "default"}
+			cm := &corev1.ConfigMap{}
+
+			Eventually(func() string {
+				if err := k8sClient.Get(ctx, key, cm); err != nil {
+					return ""
+				}
+
+				return string(cm.BinaryData["specification.json"])
+			}, timeout, interval).Should(ContainSubstring(`"/secured"`))
+
+			reconciledInstance := &v1beta1.SwaggerSpecification{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: "default"}, reconciledInstance)).Should(Succeed())
+			Expect(reconciledInstance.Status.SubResourceCatalog).Should(HaveLen(1))
+			Expect(reconciledInstance.Status.SubResourceCatalog[0].Error).Should(BeEmpty())
+		})
+
+		It("cleans up", func() {
+			ctx := context.Background()
+			server.Close()
+			testHTTPClient.set(http.DefaultClient)
+			Expect(k8sClient.Delete(ctx, specification)).Should(Succeed())
+			Expect(k8sClient.Delete(ctx, definition)).Should(Succeed())
+			Expect(k8sClient.Delete(ctx, secret)).Should(Succeed())
+		})
+	})
+
+	When("a definition with basic auth points to an insecure url", func() {
+		var (
+			specification *v1beta1.SwaggerSpecification
+			definition    *v1beta1.SwaggerDefinition
+			scope         = randStringRunes(5)
+			name          = fmt.Sprintf("insecure-%s", randStringRunes(5))
+			url           = "http://insecure/openapi"
+		)
+
+		It("does not send the credentials and reports an error", func() {
+			ctx := context.Background()
+
+			definition = &v1beta1.SwaggerDefinition{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      name,
+					Namespace: "default",
+					Labels:    map[string]string{"scope": scope},
+				},
+				Spec: v1beta1.SwaggerDefinitionSpec{
+					URL: &url,
+					Auth: &v1beta1.DefinitionAuth{
+						Basic: &v1beta1.BasicAuth{
+							SecretRef: v1beta1.LocalSecretReference{
+								Name: name,
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, definition)).Should(Succeed())
+
+			specification = &v1beta1.SwaggerSpecification{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      name,
+					Namespace: "default",
+				},
+				Spec: v1beta1.SwaggerSpecificationSpec{
+					Info: v1beta1.Info{
+						Title: "insecure",
+					},
+					DefinitionSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"scope": scope},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, specification)).Should(Succeed())
+
+			instanceLookupKey := types.NamespacedName{Name: name, Namespace: "default"}
+			reconciledInstance := &v1beta1.SwaggerSpecification{}
+
+			Eventually(func() string {
+				if err := k8sClient.Get(ctx, instanceLookupKey, reconciledInstance); err != nil {
+					return ""
+				}
+
+				if len(reconciledInstance.Status.SubResourceCatalog) != 1 {
+					return ""
+				}
+
+				return reconciledInstance.Status.SubResourceCatalog[0].Error
+			}, timeout, interval).Should(ContainSubstring("refusing to send basic auth credentials to an insecure http:// url"))
+		})
+
+		It("cleans up", func() {
+			ctx := context.Background()
+			Expect(k8sClient.Delete(ctx, specification)).Should(Succeed())
+			Expect(k8sClient.Delete(ctx, definition)).Should(Succeed())
+		})
+	})
+
+	When("a definition with basic auth allows an insecure url", func() {
+		var (
+			specification *v1beta1.SwaggerSpecification
+			definition    *v1beta1.SwaggerDefinition
+			secret        *corev1.Secret
+			server        *httptest.Server
+			scope         = randStringRunes(5)
+			name          = fmt.Sprintf("allowinsecure-%s", randStringRunes(5))
+		)
+
+		It("sends the credentials over http", func() {
+			ctx := context.Background()
+
+			By("serving a definition behind basic auth over http")
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				username, password, ok := r.BasicAuth()
+				if !ok || username != "user" || password != "pass" {
+					w.WriteHeader(http.StatusUnauthorized)
+					return
+				}
+
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"openapi":"3.0.1","info":{"title":"insecure","version":"1"},"paths":{"/insecure":{"get":{"responses":{"200":{"description":"ok"}}}}}}`))
+			}))
+
+			By("creating the credentials secret")
+			secret = &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      name,
+					Namespace: "default",
+				},
+				Data: map[string][]byte{
+					"username": []byte("user"),
+					"password": []byte("pass"),
+				},
+			}
+			Expect(k8sClient.Create(ctx, secret)).Should(Succeed())
+
+			definition = &v1beta1.SwaggerDefinition{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      name,
+					Namespace: "default",
+					Labels:    map[string]string{"scope": scope},
+				},
+				Spec: v1beta1.SwaggerDefinitionSpec{
+					URL: &server.URL,
+					Auth: &v1beta1.DefinitionAuth{
+						Basic: &v1beta1.BasicAuth{
+							AllowInsecure: true,
+							SecretRef: v1beta1.LocalSecretReference{
+								Name: name,
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, definition)).Should(Succeed())
+
+			specification = &v1beta1.SwaggerSpecification{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      name,
+					Namespace: "default",
+				},
+				Spec: v1beta1.SwaggerSpecificationSpec{
+					Info: v1beta1.Info{
+						Title: "insecure",
+					},
+					DefinitionSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"scope": scope},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, specification)).Should(Succeed())
+
+			By("waiting for the merged specification")
+			key := types.NamespacedName{Name: fmt.Sprintf("swagger-specification-%s", name), Namespace: "default"}
+			cm := &corev1.ConfigMap{}
+
+			Eventually(func() string {
+				if err := k8sClient.Get(ctx, key, cm); err != nil {
+					return ""
+				}
+
+				return string(cm.BinaryData["specification.json"])
+			}, timeout, interval).Should(ContainSubstring(`"/insecure"`))
+		})
+
+		It("cleans up", func() {
+			ctx := context.Background()
+			server.Close()
+			Expect(k8sClient.Delete(ctx, specification)).Should(Succeed())
+			Expect(k8sClient.Delete(ctx, definition)).Should(Succeed())
+			Expect(k8sClient.Delete(ctx, secret)).Should(Succeed())
+		})
+	})
+
+	When("a definition with basic auth configures a static username", func() {
+		var (
+			specification *v1beta1.SwaggerSpecification
+			definition    *v1beta1.SwaggerDefinition
+			secret        *corev1.Secret
+			server        *httptest.Server
+			scope         = randStringRunes(5)
+			name          = fmt.Sprintf("staticuser-%s", randStringRunes(5))
+		)
+
+		It("uses the static username and the password from the referenced secret", func() {
+			ctx := context.Background()
+
+			By("serving a definition behind basic auth over https")
+			server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				username, password, ok := r.BasicAuth()
+				if !ok || username != "actuator" || password != "pass" {
+					w.WriteHeader(http.StatusUnauthorized)
+					return
+				}
+
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"openapi":"3.0.1","info":{"title":"static","version":"1"},"paths":{"/static":{"get":{"responses":{"200":{"description":"ok"}}}}}}`))
+			}))
+
+			testHTTPClient.set(server.Client())
+
+			By("creating a secret which only holds the password")
+			secret = &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      name,
+					Namespace: "default",
+				},
+				Data: map[string][]byte{
+					"password": []byte("pass"),
+				},
+			}
+			Expect(k8sClient.Create(ctx, secret)).Should(Succeed())
+
+			definition = &v1beta1.SwaggerDefinition{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      name,
+					Namespace: "default",
+					Labels:    map[string]string{"scope": scope},
+				},
+				Spec: v1beta1.SwaggerDefinitionSpec{
+					URL: &server.URL,
+					Auth: &v1beta1.DefinitionAuth{
+						Basic: &v1beta1.BasicAuth{
+							Username: "actuator",
+							SecretRef: v1beta1.LocalSecretReference{
+								Name: name,
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, definition)).Should(Succeed())
+
+			specification = &v1beta1.SwaggerSpecification{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      name,
+					Namespace: "default",
+				},
+				Spec: v1beta1.SwaggerSpecificationSpec{
+					Info: v1beta1.Info{
+						Title: "static",
+					},
+					DefinitionSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"scope": scope},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, specification)).Should(Succeed())
+
+			By("waiting for the merged specification")
+			key := types.NamespacedName{Name: fmt.Sprintf("swagger-specification-%s", name), Namespace: "default"}
+			cm := &corev1.ConfigMap{}
+
+			Eventually(func() string {
+				if err := k8sClient.Get(ctx, key, cm); err != nil {
+					return ""
+				}
+
+				return string(cm.BinaryData["specification.json"])
+			}, timeout, interval).Should(ContainSubstring(`"/static"`))
+		})
+
+		It("cleans up", func() {
+			ctx := context.Background()
+			server.Close()
+			testHTTPClient.set(http.DefaultClient)
+			Expect(k8sClient.Delete(ctx, specification)).Should(Succeed())
+			Expect(k8sClient.Delete(ctx, definition)).Should(Succeed())
+			Expect(k8sClient.Delete(ctx, secret)).Should(Succeed())
 		})
 	})
 })
