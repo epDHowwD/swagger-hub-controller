@@ -58,6 +58,62 @@ spec:
   url: https://microservice-b/swagger-specs
 ```
 
+## Authenticated definitions
+
+A `SwaggerDefinition` which is served behind https with basic auth can reference a secret holding the credentials.
+The credentials are only used by `SwaggerSpecification` which fetches definitions server side, the secret must
+be in the same namespace as the `SwaggerDefinition`.
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: microservice-a-credentials
+  namespace: default
+stringData:
+  username: swagger
+  password: secret
+---
+apiVersion: swagger.infra.doodle.com/v1beta1
+kind: SwaggerDefinition
+metadata:
+  name: microservice-a
+  namespace: default
+spec:
+  url: https://microservice-a/openapispecs/v1
+  auth:
+    basic:
+      secretRef:
+        name: microservice-a-credentials
+        # optional, defaults shown
+        usernameField: username
+        passwordField: password
+```
+
+If the username is a fixed value it can be configured inline instead, in which case only the password
+is looked up in the secret and `secretRef.usernameField` is ignored:
+
+```yaml
+  auth:
+    basic:
+      username: swagger
+      secretRef:
+        name: microservice-a-credentials
+```
+
+**Note**: By default credentials are only sent over `https`. A definition which configures `spec.auth` with a plain
+`http://` url is rejected and reported as an error on the specification instead of leaking the credentials.
+For cluster internal services which are not served over TLS this can be opted out of explicitly:
+
+```yaml
+  url: http://microservice-a/openapispecs/v1
+  auth:
+    basic:
+      allowInsecure: true
+      secretRef:
+        name: microservice-a-credentials
+```
+
 ## Deployment template
 It is possible to define a custom swagger-ui deployment template which the controller will use to spin up the managed deployment.
 In the following example the deployment receives an additional container called mysidecar. Also resources

@@ -125,6 +125,14 @@ func main() {
 				&infrav1beta1.SwaggerSpecification{}: {Label: watchSelector},
 			},
 		},
+		Client: ctrlclient.Options{
+			Cache: &ctrlclient.CacheOptions{
+				// Secrets are only read on demand for basic auth credentials.
+				// Reading them live keeps the required rbac limited to get and
+				// avoids caching all secrets in scope.
+				DisableFor: []ctrlclient.Object{&corev1.Secret{}},
+			},
+		},
 	}
 
 	if watchNamespace != "" {
