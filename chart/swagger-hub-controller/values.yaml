@@ -29,6 +29,22 @@ secretMounts: []
 #    secretName: secret
 #    path: /secrets
 
+# A list of configmaps and their paths to mount inside the pod.
+# This is useful for mounting a custom CA bundle to be trusted for outgoing
+# https requests (e.g. when fetching SwaggerDefinitions served with a
+# certificate signed by a private/internal CA).
+#
+# Combine this with `env.SSL_CERT_FILE` (see below) to make Go's default
+# HTTPS transport trust the mounted bundle. A common source for such a
+# bundle is a `Bundle` resource managed by trust-manager
+# (https://cert-manager.io/docs/trust/trust-manager/, part of the
+# CNCF/Linux Foundation cert-manager project), which can render the trusted
+# CA certificates of a cluster into a ConfigMap.
+configMapMounts: []
+#  - name: trust-bundle
+#    configMapName: trust-bundle
+#    path: /etc/ssl/custom-certs
+
 # Add additional containers (sidecars)
 extraContainers:
 
@@ -66,6 +82,12 @@ env: {}
 # env:
 #   NAMESPACES: default
 #   CONCURRENT: "10"
+#   # Trust a custom CA bundle mounted via `configMapMounts` for all outgoing
+#   # https requests (Go reads SSL_CERT_FILE on Linux, see
+#   # https://pkg.go.dev/crypto/x509#SystemCertPool). The referenced file
+#   # must contain the full set of trusted CA certificates, not just the
+#   # custom one, since it replaces rather than extends the system roots.
+#   SSL_CERT_FILE: /etc/ssl/custom-certs/ca-bundle.pem
 
 ## The name of a secret in the same kubernetes namespace which contain values to be added to the environment
 ## This can be useful for auth tokens, etc

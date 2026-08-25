@@ -79,6 +79,13 @@ spec:
           subPath: {{ .subPath }}
           {{- end }}
         {{- end }}
+        {{- range .Values.configMapMounts }}
+        - name: {{ .name }}
+          mountPath: {{ .path }}
+          {{- if .subPath }}
+          subPath: {{ .subPath }}
+          {{- end }}
+        {{- end }}
       {{- if .Values.kubeRBACProxy.enabled }}
       - args:
         - --secure-listen-address=0.0.0.0:8443
@@ -107,6 +114,11 @@ spec:
       - name: {{ .name }}
         secret:
           secretName: {{ .secretName }}
+      {{- end }}
+      {{- range .Values.configMapMounts }}
+      - name: {{ .name }}
+        configMap:
+          name: {{ .configMapName }}
       {{- end }}
       securityContext:
       {{- toYaml .Values.podSecurityContext | nindent 8 }}
