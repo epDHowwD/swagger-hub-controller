@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -527,6 +528,106 @@ var _ = Describe("SwaggerSpecification controller", func() {
 			Expect(k8sClient.Delete(ctx, specification)).Should(Succeed())
 			Expect(k8sClient.Delete(ctx, definition)).Should(Succeed())
 			Expect(k8sClient.Delete(ctx, secret)).Should(Succeed())
+		})
+	})
+
+	When("a definition declares tags", func() {
+		var (
+			specification *v1beta1.SwaggerSpecification
+			definition    *v1beta1.SwaggerDefinition
+			server        *httptest.Server
+			scope         = randStringRunes(5)
+			name          = fmt.Sprintf("tagged-%s", randStringRunes(5))
+		)
+
+		It("prefixes tag names and preserves their descriptions", func() {
+			ctx := context.Background()
+
+			By("serving a definition with top-level tags and tagged operations")
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{
+					"openapi":"3.0.1",
+					"info":{"title":"tagged","version":"1"},
+					"tags":[{"name":"task-controller","description":"Task operations"}],
+					"paths":{
+						"/tasks":{"get":{"tags":["task-controller"],"responses":{"200":{"description":"ok"}}}},
+						"/untagged":{"get":{"responses":{"200":{"description":"ok"}}}}
+					}
+				}`))
+			}))
+
+			definition = &v1beta1.SwaggerDefinition{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      name,
+					Namespace: "default",
+					Labels:    map[string]string{"scope": scope},
+				},
+				Spec: v1beta1.SwaggerDefinitionSpec{
+					URL: &server.URL,
+				},
+			}
+			Expect(k8sClient.Create(ctx, definition)).Should(Succeed())
+
+			specification = &v1beta1.SwaggerSpecification{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      name,
+					Namespace: "default",
+				},
+				Spec: v1beta1.SwaggerSpecificationSpec{
+					Info: v1beta1.Info{
+						Title: "tagged",
+					},
+					DefinitionSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"scope": scope},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, specification)).Should(Succeed())
+
+			By("waiting for the merged specification")
+			key := types.NamespacedName{Name: fmt.Sprintf("swagger-specification-%s", name), Namespace: "default"}
+			cm := &corev1.ConfigMap{}
+
+			Eventually(func() string {
+				if err := k8sClient.Get(ctx, key, cm); err != nil {
+					return ""
+				}
+
+				return string(cm.BinaryData["specification.json"])
+			}, timeout, interval).Should(ContainSubstring(`"/tasks"`))
+
+			var merged struct {
+				Tags []struct {
+					Name        string `json:"name"`
+					Description string `json:"description"`
+				} `json:"tags"`
+				Paths map[string]struct {
+					Get struct {
+						Tags []string `json:"tags"`
+					} `json:"get"`
+				} `json:"paths"`
+			}
+			Expect(json.Unmarshal(cm.BinaryData["specification.json"], &merged)).Should(Succeed())
+
+			expectedTag := fmt.Sprintf("%s.task-controller", name)
+
+			By("prefixing the top-level tag name while keeping its description")
+			Expect(merged.Tags).Should(ContainElement(HaveField("Name", expectedTag)))
+			Expect(merged.Tags).Should(ContainElement(HaveField("Description", "Task operations")))
+
+			By("prefixing the tag referenced by the tagged operation")
+			Expect(merged.Paths["/tasks"].Get.Tags).Should(ConsistOf(expectedTag))
+
+			By("falling back to the definition name for untagged operations")
+			Expect(merged.Paths["/untagged"].Get.Tags).Should(ConsistOf(name))
+		})
+
+		It("cleans up", func() {
+			ctx := context.Background()
+			server.Close()
+			Expect(k8sClient.Delete(ctx, specification)).Should(Succeed())
+			Expect(k8sClient.Delete(ctx, definition)).Should(Succeed())
 		})
 	})
 })
