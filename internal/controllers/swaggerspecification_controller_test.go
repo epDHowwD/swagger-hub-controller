@@ -529,4 +529,71 @@ var _ = Describe("SwaggerSpecification controller", func() {
 			Expect(k8sClient.Delete(ctx, secret)).Should(Succeed())
 		})
 	})
+
+	When("a definition exposes security schemes", func() {
+		var (
+			specification *v1beta1.SwaggerSpecification
+			definition    *v1beta1.SwaggerDefinition
+			server        *httptest.Server
+			scope         = randStringRunes(5)
+			name          = fmt.Sprintf("secscheme-%s", randStringRunes(5))
+		)
+
+		It("preserves security schemes in the merged spec", func() {
+			ctx := context.Background()
+
+			By("serving a definition with a security scheme")
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"openapi":"3.0.1","info":{"title":"secured","version":"1"},"paths":{"/ping":{"get":{"responses":{"200":{"description":"ok"}}}}},"components":{"securitySchemes":{"basicAuth":{"type":"http","scheme":"basic"}}}}`))
+			}))
+
+			testHTTPClient.set(http.DefaultClient)
+
+			By("creating a SwaggerDefinition")
+			definition = &v1beta1.SwaggerDefinition{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      name,
+					Namespace: "default",
+					Labels:    map[string]string{"scope": scope},
+				},
+				Spec: v1beta1.SwaggerDefinitionSpec{
+					URL: &server.URL,
+				},
+			}
+			Expect(k8sClient.Create(ctx, definition)).Should(Succeed())
+
+			specification = &v1beta1.SwaggerSpecification{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      name,
+					Namespace: "default",
+				},
+				Spec: v1beta1.SwaggerSpecificationSpec{
+					Info: v1beta1.Info{Title: "merged"},
+					DefinitionSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"scope": scope},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, specification)).Should(Succeed())
+
+			By("waiting for the merged specification to contain the security scheme")
+			key := types.NamespacedName{Name: fmt.Sprintf("swagger-specification-%s", name), Namespace: "default"}
+			cm := &corev1.ConfigMap{}
+
+			Eventually(func() string {
+				if err := k8sClient.Get(ctx, key, cm); err != nil {
+					return ""
+				}
+				return string(cm.BinaryData["specification.json"])
+			}, timeout, interval).Should(ContainSubstring(`"basicAuth"`))
+		})
+
+		It("cleans up", func() {
+			ctx := context.Background()
+			server.Close()
+			Expect(k8sClient.Delete(ctx, specification)).Should(Succeed())
+			Expect(k8sClient.Delete(ctx, definition)).Should(Succeed())
+		})
+	})
 })
