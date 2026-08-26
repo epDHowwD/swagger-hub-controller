@@ -267,6 +267,7 @@ func (r *SwaggerSpecificationReconciler) generateOpenAPI(ctx context.Context, sp
 
 	var paths []openapi3.NewPathsOption
 	var components = make(openapi3.Schemas)
+	var securitySchemes = make(openapi3.SecuritySchemes)
 
 	for result := range results {
 		if result.err != nil {
@@ -277,6 +278,10 @@ func (r *SwaggerSpecificationReconciler) generateOpenAPI(ctx context.Context, sp
 		if result.spec.Components != nil {
 			for name, schema := range result.spec.Components.Schemas {
 				components[name] = schema
+			}
+
+			for name, scheme := range result.spec.Components.SecuritySchemes {
+				securitySchemes[name] = scheme
 			}
 		}
 
@@ -298,7 +303,8 @@ func (r *SwaggerSpecificationReconciler) generateOpenAPI(ctx context.Context, sp
 
 	schema.Paths = openapi3.NewPaths(paths...)
 	schema.Components = &openapi3.Components{
-		Schemas: components,
+		Schemas:         components,
+		SecuritySchemes: securitySchemes,
 	}
 
 	return specification, schema, nil
