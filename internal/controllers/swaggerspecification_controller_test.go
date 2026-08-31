@@ -3,8 +3,6 @@ package controllers
 import (
 	"context"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"time"
 
 	"github.com/DoodleScheduling/swagger-hub-controller/api/v1beta1"
