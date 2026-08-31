@@ -268,6 +268,7 @@ func (r *SwaggerSpecificationReconciler) generateOpenAPI(ctx context.Context, sp
 	var paths []openapi3.NewPathsOption
 	var components = make(openapi3.Schemas)
 	var securitySchemes = make(openapi3.SecuritySchemes)
+	var tags openapi3.Tags
 
 	for result := range results {
 		if result.err != nil {
@@ -285,9 +286,26 @@ func (r *SwaggerSpecificationReconciler) generateOpenAPI(ctx context.Context, sp
 			}
 		}
 
+		for _, tag := range result.spec.Tags {
+			tags = append(tags, &openapi3.Tag{
+				Name:         fmt.Sprintf("%s.%s", result.definition.Name, tag.Name),
+				Description:  tag.Description,
+				ExternalDocs: tag.ExternalDocs,
+			})
+		}
+
 		for _, pathItem := range result.spec.Paths.Map() {
 			for _, op := range pathItem.Operations() {
-				op.Tags = []string{result.definition.Name}
+				if len(op.Tags) == 0 {
+					op.Tags = []string{result.definition.Name}
+					continue
+				}
+
+				prefixedTags := make([]string, len(op.Tags))
+				for i, tag := range op.Tags {
+					prefixedTags[i] = fmt.Sprintf("%s.%s", result.definition.Name, tag)
+				}
+				op.Tags = prefixedTags
 			}
 		}
 
@@ -306,6 +324,7 @@ func (r *SwaggerSpecificationReconciler) generateOpenAPI(ctx context.Context, sp
 		Schemas:         components,
 		SecuritySchemes: securitySchemes,
 	}
+	schema.Tags = tags
 
 	return specification, schema, nil
 }
